@@ -9,7 +9,7 @@ import sqlite3
 import os
 
 # Ensure the environment variable is set
-load_dotenv()
+# load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("Не указан BOT_TOKEN в переменных окружения")
