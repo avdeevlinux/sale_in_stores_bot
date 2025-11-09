@@ -1,0 +1,51 @@
+# Python cache and compiled files
+__pycache__/  # Exclude Python cache directories
+__pycache__/*
+*.py[cod]      # Exclude compiled Python files
+*.egg-info
+*.so
+.Python
+build/
+dist/
+pip-log.txt
+
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Files
+.env
+*.env
+.env.*
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Logs
+*.log
+*.log.*
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temp files
+*.swp
+*.swo
+*~
+bot/__pycache__/
