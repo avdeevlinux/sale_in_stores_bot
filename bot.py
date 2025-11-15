@@ -1,15 +1,18 @@
 import io
+import re
+import os
+import sqlite3
+import logging
 import requests
+from rutube import Rutube
+import yt_dlp as youtubedl
+from typing import Optional
 from PIL import Image
 from dotenv import load_dotenv
-import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, Bot, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-import sqlite3
-import os
-
 # Ensure the environment variable is set
-# load_dotenv()
+load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("Не указан BOT_TOKEN в переменных окружения")
@@ -140,7 +143,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup = InlineKeyboardMarkup(keyboard)
         if query.message and isinstance(query.message, Message):
             logging.info(f"Editing message for task_id {task_id if query.data != 'start_course' else 1}")
-            await query.message.edit_text(text=f"{task_name}\n{task_content}\n{task_link}", reply_markup=reply_markup)
+            if task_id == 1:
+                await query.message.edit_text(text=f"{task_name}\n{task_content}")
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=f"{task_name}\n{task_content}")
+            # Передаем ссылку из базы данных напрямую
+            await download_and_send_video(update, context, video_url=task_link, task_id=task_id, query=query)
         else:
             logging.error(f"query.message is None or not an instance of Message for task_id {task_id if query.data != 'start_course' else 1}")
             await query.answer(text="Произошла ошибка. Пожалуйста, попробуйте снова.", show_alert=True)
@@ -155,6 +163,92 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await query.answer(text="Произошла ошибка. Пожалуйста, попробуйте снова.", show_alert=True)
             if chat_id:
                 await context.bot.send_message(chat_id=chat_id, text="Произошла ошибка. Пожалуйста, попробуйте снова.")
+
+def extract_rutube_video_id(url: str) -> tuple[Optional[str], Optional[str]]:
+    """Извлекает ID видео и токен p из URL Rutube"""
+    match = re.search(
+        r'/video/private/(?P<video_id>[a-f0-9]+)/.*[?&]p=(?P<p_token>[a-zA-Z0-9_-]+)', 
+        url, 
+        re.IGNORECASE
+    )
+    return (match.group('video_id'), match.group('p_token')) if match else (None, None)
+
+def get_rutube_json(video_id: str, p_token: str) -> Optional[dict]:
+    """Получаем JSON данные видео через API Rutube"""
+    url = f'https://rutube.ru/api/play/options/{video_id}/?p={p_token}'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://rutube.ru/',
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"API Error: {str(e)}")
+        return None
+
+async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_TYPE, video_url: str, task_id: int, query) -> None:
+    if not update.effective_chat:
+        return
+    
+    video_id, p_token = extract_rutube_video_id(video_url)
+    if not video_id or not p_token:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Неверный формат ссылки Rutube"
+        )
+        return
+        
+    data = get_rutube_json(video_id, p_token)
+    if not data or 'video_balancer' not in data or 'm3u8' not in data['video_balancer']:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Ошибка получения данных видео"
+        )
+        return
+        
+    m3u8_url = data['video_balancer']['m3u8']
+    
+    filepath = 'video.mp4'
+    try:
+        ydl_opts = {
+            'outtmpl': filepath,
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+            'quiet': True,
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4'
+            }],
+            'format': 'bestvideo[height<=640][ext=mp4]+bestaudio[ext=m4a]/best[height<=640]',
+            'concurrent-fragment-downloads': 3,
+            'outtmpl': filepath,
+            'quiet': True,
+            'audio-quality': '96K',
+            'video-multistreams': True,
+            'fragment-retries': 10
+        }
+        with youtubedl.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([m3u8_url])
+        
+        with open(filepath, 'rb') as f:
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=f,
+                caption=f'Задание №{task_id}',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Следующий урок", callback_data=str(task_id + 1))]]),
+                protect_content=True
+            )
+            
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Ошибка обработки видео: {str(e)}"
+        )
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
 def main() -> None:
     if BOT_TOKEN is None:
