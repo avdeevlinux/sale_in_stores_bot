@@ -233,13 +233,29 @@ async def download_and_send_video(update: Update, context: ContextTypes.DEFAULT_
             ydl.download([m3u8_url])
         
         with open(filepath, 'rb') as f:
-            await context.bot.send_video(
+            # Удаляем кнопку у предыдущего видео, если оно есть
+            if 'last_video_message_id' in context.chat_data:
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=update.effective_chat.id,
+                        message_id=context.chat_data['last_video_message_id'],
+                        reply_markup=None
+                    )
+                except Exception as e:
+                    logging.error(f"Ошибка при удалении кнопки предыдущего видео: {e}")
+
+            # Отправляем новое видео с кнопкой
+            sent_message = await context.bot.send_video(
                 chat_id=update.effective_chat.id,
                 video=f,
                 caption=f'Задание №{task_id}',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Следующий урок", callback_data=str(task_id + 1))]]),
                 protect_content=True
             )
+            
+            # Сохраняем ID нового видео для последующего обновления
+            if context.chat_data is not None:
+                context.chat_data['last_video_message_id'] = sent_message.message_id
             
     except Exception as e:
         await context.bot.send_message(
