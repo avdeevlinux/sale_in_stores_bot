@@ -49,3 +49,4 @@ Thumbs.db
 *.swo
 *~
 bot/__pycache__/
+/videos/

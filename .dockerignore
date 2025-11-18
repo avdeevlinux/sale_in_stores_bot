@@ -6,3 +6,4 @@ venv/
 *.log
 *.log.*
 logs/
+/videos/
