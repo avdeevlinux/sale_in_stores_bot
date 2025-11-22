@@ -7,3 +7,4 @@ venv/
 *.log.*
 logs/
 /videos/
+test_download_video.py

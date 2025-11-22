@@ -46,107 +46,52 @@ def get_rutube_json(video_id: str, p_token: str) -> Optional[dict]:
         print(f"API Error: {str(e)}")
         return None
 
-async def download_and_send_video(update, context, video_url: str, task_id: int):
-    if not update.effective_chat:
-        return
-    
-    video_id, p_token = extract_rutube_video_id(video_url)
-    if not video_id or not p_token:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Неверный формат ссылки Rutube"
-        )
-        return
-        
-    data = get_rutube_json(video_id, p_token)
-    if not data or 'video_balancer' not in data or 'm3u8' not in data['video_balancer']:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Ошибка получения данных видео"
-        )
-        return
-        
-    m3u8_url = data['video_balancer']['m3u8']
-    
-    filepath = 'video.mp4'
-    try:
-        ydl_opts = {
-            'outtmpl': filepath,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
-            'quiet': True,
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4'
-            }],
-            'format': 'bestvideo[height<=640][ext=mp4]+bestaudio[ext=m4a]/best[height<=640]',
-            'concurrent-fragment-downloads': 3,
-            'outtmpl': filepath,
-            'quiet': True,
-            'audio-quality': '96K',
-            'video-multistreams': True,
-            'fragment-retries': 10
-        }
-        with youtubedl.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([m3u8_url])
-        
-        with open(filepath, 'rb') as f:
-            await context.bot.send_video(
-                chat_id=update.effective_chat.id,
-                video=f,
-                caption=f'Задание №{task_id}',
-                protect_content=True
-            )
-            
-    except Exception as e:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"Ошибка обработки видео: {str(e)}"
-        )
-    finally:
-        if os.path.exists(filepath):
-            os.remove(filepath)
-
 async def send_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    conn = None
+    if not BOT_TOKEN:
+        return
     try:
-        conn = sqlite3.connect('sales_in_stories.db')
-        cursor = conn.cursor()
+        video_files = [f for f in os.listdir('./videos') if f.endswith('.mp4') and f.startswith('task_')]
         
-        cursor.execute("SELECT task_id, task_link FROM tasks ORDER BY task_id ASC")
-        videos = cursor.fetchall()
+        # Sort video files by task_id
+        video_files.sort(key=lambda x: int(re.search(r'task_(\d+)\.mp4', x).group(1)))
         
-        for task_id, task_link in videos:
-            if update.effective_chat:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"Обрабатываю видео {task_id}: {task_link}"
-                )
-            try:
-                # Передаем ссылку из базы данных напрямую
-                await download_and_send_video(update, context, video_url=task_link, task_id=task_id)
-            except Exception as e:
-                if update.effective_chat:
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=f"Ошибка обработки видео {task_id}: {str(e)}"
-                    )
-        
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        for video_file in video_files:
+            match = re.search(r'task_(\d+)\.mp4', video_file)
+            if match:
+                task_id = int(match.group(1))
+                video_path = os.path.join('./videos', video_file)
+                try:
+                    with open(video_path, 'rb') as video_file:
+                        await context.bot.send_video(
+                            chat_id=update.effective_chat.id,
+                            video=video_file,
+                            caption=f'Задание №{task_id}',
+                            height=1024,
+                            width=580,
+                            protect_content=True
+                        )
+                except Exception as e:
+                    print(f"Error sending video for task {task_id}: {e}")
+                    if update.effective_chat:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=f"Error sending video for task {task_id}: {e}"
+                        )
     except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        if conn:
-            conn.close()
-
+        print(f"Error processing video files: {e}")
+        if update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"Error processing video files: {e}"
+            )
 
 def main() -> None:
     if not BOT_TOKEN:
         return
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-    
+
     application.add_handler(CommandHandler('video', send_videos))
-    
+
     application.run_polling()
 
 if __name__ == '__main__':

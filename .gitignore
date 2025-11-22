@@ -50,3 +50,4 @@ Thumbs.db
 *~
 bot/__pycache__/
 /videos/
+test_download_video.py

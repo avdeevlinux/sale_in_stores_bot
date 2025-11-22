@@ -4,7 +4,7 @@ import sqlite3
 import logging
 import requests
 import yt_dlp as youtubedl
-from typing import Optional
+from typing import Optional, Any, Dict
 from dotenv import load_dotenv
 import re
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -50,6 +50,34 @@ def get_rutube_json(video_id: str, p_token: str) -> Optional[dict]:
         print(f"API Error: {str(e)}")
         return None
 
+def download_video_with_size_limit(url: str, filepath: str, max_size_mb: int = 50) -> None:
+    ydl_opts: Dict[str, Any] = {
+        'outtmpl': filepath,
+        'quiet': True,
+        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]',
+        'merge_output_format': 'mp4',
+    }
+
+    with youtubedl.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        duration: Optional[int] = info.get('duration')
+        max_size_bytes = max_size_mb * 1024 * 1024
+        if duration is not None and duration > 0:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }]
+            ydl_opts['postprocessor_args'] = [
+                '-c:v', 'libx264',
+                '-crf', '22',
+                '-preset', 'veryfast',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+            ]
+
+        with youtubedl.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
 def download_all_videos() -> None:
     logging.info("Starting download_all_videos function.")
     cursor.execute("SELECT task_id, task_link FROM tasks;")
@@ -59,60 +87,21 @@ def download_all_videos() -> None:
 
     for task_id, video_url in tasks:
         filepath = f'./videos/task_{task_id}.mp4'
-        if os.path.exists(filepath):
-            logging.info(f"Video {filepath} already downloaded.")
-            continue
-        
-        logging.info(f"Starting download for task_id: {task_id}, video_url: {video_url}")
-        video_id, p_token = extract_rutube_video_id(video_url)
-        if not video_id or not p_token:
-            logging.error(f"Неверный формат ссылки Rutube для задачи {task_id}")
-            continue
-            
-            logging.info(f"Extracted video_id: {video_id}, p_token: {p_token}")
-            data = get_rutube_json(video_id, p_token)
-            if not data or 'video_balancer' not in data or 'm3u8' not in data['video_balancer']:
-                logging.error(f"Ошибка получения данных видео для задачи {task_id}")
-                continue
-            
-            m3u8_url = data['video_balancer']['m3u8']
-            logging.info(f"Extracted m3u8_url: {m3u8_url}")
-            
-            from typing import Any, Dict
-
-            ydl_opts: Dict[str, Any] = {
-                'outtmpl': filepath,
-                'format': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]',
-                'quiet': True,
-                'merge_output_format': 'mp4',
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }],
-                'postprocessor_args': [
-                    '-crf', '24',
-                    '-preset', 'veryfast',
-                    '-b:v', '96k',
-                    '-b:a', '24k',
-                    '-pix_fmt', 'yuv420p',
-                ],
-            }
-            logging.info(f"Starting download with options: {ydl_opts}")
+        if not os.path.exists(filepath):
+            logging.info(f"Starting download for task_id: {task_id}, video_url: {video_url}")
             try:
-                with youtubedl.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([m3u8_url])
+                download_video_with_size_limit(video_url, filepath, max_size_mb=50)
+                logging.info(f'Video {filepath} downloaded.')
             except Exception as e:
                 logging.error(f"Ошибка обработки видео для задачи {task_id}: {str(e)}")
             finally:
-                if os.path.exists(filepath):
-                    logging.info(f'Video {filepath} downloaded.')
-                else:
+                if not os.path.exists(filepath):
                     logging.error(f'Failed to download video для task {task_id}.')
+        else:
+            print(f"The file task_{task_id}.mp4 was uploaded earlier")
     conn.commit()
     conn.close()
     logging.info(f"Completed all downloads.")
 
 if __name__ == "__main__":
-    if not os.path.exists('./videos'):
-        os.makedirs('./videos')
     download_all_videos()
