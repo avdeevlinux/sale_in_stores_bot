@@ -132,12 +132,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     photo=photo
                 )
                 # Попытка удалить команду /start
-                try:
-                    if update.message.message_id:
-                        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
-                except Exception as e:
-                    # Логирование неудачи удаления
-                    logging.error(f"Не удалось удалить сообщение: {e}")
+                # try:
+                #     if update.message.message_id:
+                #         await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+                # except Exception as e:
+                #     # Логирование неудачи удаления
+                #     logging.error(f"Не удалось удалить сообщение: {e}")
 
                 # Сохранение ID сообщения с фото
                 if photo_message:
@@ -188,20 +188,27 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if query.data == 'start_course':
             # Удаление фото и приветствия при старте курса
-            photo_msg_id = context.user_data.get('photo_message_id')
+            # photo_msg_id = context.user_data.get('photo_message_id')
             welcome_msg_id = context.user_data.get('welcome_message_id')
 
-            if photo_msg_id:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=photo_msg_id)
-                except Exception as e:
-                    logging.error(f"Не удалось удалить фото: {e}")
+            # if photo_msg_id:
+            #     try:
+            #         await context.bot.delete_message(chat_id=chat_id, message_id=photo_msg_id)
+            #     except Exception as e:
+            #         logging.error(f"Не удалось удалить фото: {e}")
 
             if welcome_msg_id:
                 try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=welcome_msg_id)
+                    # await context.bot.delete_message(chat_id=chat_id, message_id=welcome_msg_id)
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=chat_id, message_id=welcome_msg_id, reply_markup=None
+                    )
+                    logging.info(f"Удалена кнопка с предыдущего сообщения {welcome_msg_id}")
                 except Exception as e:
-                    logging.error(f"Не удалось удалить приветствие: {e}")
+                    # logging.error(f"Не удалось удалить приветствие: {e}")
+                    logging.error(f"Не удалось удалить кнопку 'Начать курс': {e}")
+
+            # Удаление кнопки "Начать курс" после нажатия на неё
 
             # Очистка user_data
             context.user_data.pop('photo_message_id', None)
