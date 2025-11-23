@@ -194,6 +194,29 @@ async def list_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logging.error(f"Ошибка листинга видео файлов: {e}")
         await update.message.reply_text("Ошибка при получении списка видео файлов")
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Команда /help: показывает справку по боту.
+    """
+    if not update.message:
+        return
+
+    help_text = """
+*Доступные команды:*
+
+/start - Запустить курс "Продажи в сториз за 12 дней"
+/help - Показать эту справку
+
+*Как пользоваться:*
+1. Нажмите /start для приветствия и оплаты (3990 ₽ через YooKassa).
+2. Купите курс → "Проверить оплату".
+3. После оплаты: "Начать курс 🎉" → уроки с видео + текстом.
+4. "Следующий урок" для перехода.
+
+Курс защищён оплатой. Тестовые карты YooKassa: 4111 1111 1111 1111.
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Обработчик команды /start: отправляет приветствие с фото админа и кнопкой начать курс.
@@ -469,6 +492,7 @@ def main() -> None:
     # Добавление обработчиков команд и callback
     application.add_handler(CommandHandler("start", start))  # /start
     application.add_handler(CommandHandler("list_videos", list_videos))  # /list_videos
+    application.add_handler(CommandHandler("help", help_command))  # /help
     application.add_handler(CallbackQueryHandler(button))  # Кнопки
 
     # Запуск polling для получения обновлений
