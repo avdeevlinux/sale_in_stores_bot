@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from download_video import download_all_videos  # Импорт функции для скачивания всех видео
+from yookassa import Configuration, Payment
+import time
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -23,6 +25,9 @@ if not BOT_TOKEN:
 ADMIN_ID = os.getenv('ADMIN_ID')
 if not ADMIN_ID:
     raise ValueError("Не указан ADMIN_ID в переменных окружения")  # Проверка наличия ID админа
+
+Configuration.account_id = os.getenv('YOOKASSA_SHOP_ID')
+Configuration.secret_key = os.getenv('YOOKASSA_SECRET_KEY')
 
 # Настройка логирования для отслеживания событий и ошибок
 logging.basicConfig(
@@ -44,6 +49,87 @@ cursor.execute("""
     )
 """)
 conn.commit()  # Фиксация создания таблицы
+
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER UNIQUE,
+        yookassa_payment_id TEXT UNIQUE,
+        status TEXT DEFAULT 'pending',  -- pending, waiting_for_capture, succeeded, canceled
+        amount REAL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        paid_at TIMESTAMP NULL
+    )
+""")
+conn.commit()
+
+async def is_user_paid(chat_id: int) -> bool:
+    cursor.execute("SELECT 1 FROM payments WHERE chat_id = ? AND status = 'succeeded'", (chat_id,))
+    return cursor.fetchone() is not None
+
+async def create_payment(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+    idempotency_key = f"course_{chat_id}_{int(time.time())}"
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        first_name = chat.first_name or ''
+        last_name = getattr(chat, 'last_name', '') or ''
+        username = f"@{chat.username}" if chat.username else ''
+        description = f"Оплата курса 'Продажи в сториз' для Telegram {first_name} {last_name} {username} [{chat_id}]"
+        metadata = {
+            "telegram_chat_id": str(chat_id),
+            "first_name": first_name,
+            "last_name": last_name,
+            "username": chat.username or None
+        }
+        payment = Payment.create({
+            "amount": {
+                "value": os.getenv('COURSE_PRICE', '1990.00'),
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": "https://yookassa.ru/my/test"  # Or your site/TG link
+            },
+            "capture": True,
+            "description": description,
+            "metadata": metadata
+        }, idempotency_key)
+        
+        # Store pending
+        cursor.execute("""
+            INSERT OR REPLACE INTO payments (chat_id, yookassa_payment_id, status, amount, description)
+            VALUES (?, ?, 'pending', ?, ?)
+        """, (chat_id, payment.id, float(payment.amount.value), payment.description))
+        conn.commit()
+        
+        return payment.confirmation.confirmation_url
+    except Exception as e:
+        logging.error(f"Payment creation failed: {e}")
+        return None
+
+async def check_payment(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    cursor.execute("SELECT yookassa_payment_id FROM payments WHERE chat_id = ? AND status = 'pending'", (chat_id,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    payment_id = row[0]
+    try:
+        payment = Payment.find_one(payment_id)
+        if payment.status == 'succeeded':
+            cursor.execute("""
+                UPDATE payments SET status = 'succeeded', paid_at = CURRENT_TIMESTAMP
+                WHERE chat_id = ?
+            """, (chat_id,))
+            conn.commit()
+            return True
+        elif payment.status in ['canceled', 'rejected']:
+            cursor.execute("UPDATE payments SET status = ? WHERE chat_id = ?", (payment.status, chat_id))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"Payment check failed: {e}")
+    return False
+
 
 async def get_admin_photo(bot: Bot, admin_id: str) -> Optional[InputFile]:
     """
@@ -156,10 +242,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "⭕️Текст — текстовое описание, инфоповод и важные особенности для достижения успешного результата.\n\n"
                 "Этот бот создан как помощник для обучения экспертов и предпринимателей без выгорания."
             )
+            paid = await is_user_paid(chat_id)
+            if paid:
+                extra_text = "\n\n✅ Вы уже оплатили курс!"
+                button_text = "Начать курс 🎉"
+                callback_data_b = 'start_course'
+            else:
+                extra_text = "\n\n💳 Доступ к курсу платный."
+                button_text = f"Купить курс ({os.getenv('COURSE_PRICE', '1990')} ₽)"
+                callback_data_b = 'buy_course'
+            full_text = welcome_text + extra_text
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, callback_data=callback_data_b)]])
             welcome_message = await context.bot.send_message(
                 chat_id=chat_id,
-                text=welcome_text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Начать курс", callback_data='start_course')]])
+                text=full_text,
+                reply_markup=keyboard
             )
             # Сохранение ID приветственного сообщения
             context.user_data['welcome_message_id'] = welcome_message.message_id
@@ -185,6 +282,25 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         chat_id = update.effective_chat.id  # ID чата для отправки
+
+        if query.data == 'buy_course':
+            url = await create_payment(chat_id, context)
+            if url:
+                check_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Проверить оплату", callback_data='check_pay')]])
+                await context.bot.send_message(chat_id=chat_id, text=f"Перейдите по ссылке для оплаты:\n{url}", reply_markup=check_keyboard)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="Ошибка создания платежа. Попробуйте позже.")
+            await query.answer()
+            return
+
+        elif query.data == 'check_pay':
+            paid = await check_payment(chat_id, context)
+            if paid:
+                await context.bot.send_message(chat_id=chat_id, text="Оплата подтверждена! 🎉 Начинаем курс:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Начать курс", callback_data='start_course')]]))
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="Оплата не подтверждена. Перейдите по ссылке и попробуйте снова.")
+            await query.answer()
+            return
 
         if query.data == 'start_course':
             # Удаление фото и приветствия при старте курса
@@ -220,6 +336,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Установка task_id = 1 для первого урока
             task_id = 1
         else:
+            if not await is_user_paid(chat_id):
+                await context.bot.send_message(chat_id=chat_id, text="Доступ к курсу платный. Нажмите /start для оплаты.")
+                await query.answer()
+                return
             # Парсинг task_id из callback_data
             try:
                 task_id = int(query.data)
