@@ -144,6 +144,15 @@ def validate_promo(promo_key: str) -> Optional[float]:
     row = cursor.fetchone()
     return row[0] if row else None
 
+def get_admin_keyboard() -> InlineKeyboardMarkup:
+    """Admin menu keyboard with promo button."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Подготовить отчет", callback_data='prepare_report')],
+        [InlineKeyboardButton("Список пользователей", callback_data='list_users')],
+        [InlineKeyboardButton("Удалить пользователя", callback_data='delete_user')],
+        [InlineKeyboardButton("Добавить промокод", callback_data='add_promo')]
+    ])
+
 def is_consent_and_registered(chat_id: int) -> bool:
     """Check if user has consented and registered."""
     user = get_user(chat_id)
@@ -354,11 +363,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.info(f"User ID: {chat_id}")
 
         if str(chat_id) == ADMIN_ID:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Подготовить отчет", callback_data='prepare_report')],
-                [InlineKeyboardButton("Список пользователей", callback_data='list_users')],
-                [InlineKeyboardButton("Удалить пользователя", callback_data='delete_user')]
-            ])
+            keyboard = get_admin_keyboard()
             await context.bot.send_message(chat_id=chat_id, text="Меню администратора.", reply_markup=keyboard)
             return
         else:
@@ -592,14 +597,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         elif query.data == 'admin_menu':
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Подготовить отчет", callback_data='prepare_report')],
-                [InlineKeyboardButton("Список пользователей", callback_data='list_users')],
-                [InlineKeyboardButton("Удалить пользователя", callback_data='delete_user')]
-            ])
+            keyboard = get_admin_keyboard()
             await query.edit_message_text("Меню администратора.", reply_markup=keyboard)
             await query.answer()
             return
+
+        elif query.data == 'add_promo':
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            context.user_data['admin_promo_state'] = 'promo_key'
+            await query.edit_message_text("Введите название промокода:")
+            await query.answer()
 
         elif query.data.startswith('delete_confirm_'):
             try:
@@ -692,16 +701,60 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.error(f"Ошибка в функции button: {e}")
 
 async def register_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text inputs during registration."""
+    """Handle text inputs during registration and admin promo addition."""
     if not update.message:
         return
     chat_id = update.message.chat.id
     if context.user_data is None:
         return
+    text = (update.message.text or '').strip()
+
+    admin_promo_state = context.user_data.get('admin_promo_state')
+    if str(chat_id) == ADMIN_ID and admin_promo_state:
+        if admin_promo_state == 'promo_key':
+            if not text:
+                await update.message.reply_text("Введите название промокода:")
+                return
+            cursor.execute("SELECT 1 FROM promo WHERE promo_key = ?", (text,))
+            if cursor.fetchone():
+                await update.message.reply_text("Промокод уже существует. Введите другой:")
+                return
+            context.user_data['pending_promo_key'] = text
+            context.user_data['admin_promo_state'] = 'promo_price'
+            await update.message.reply_text("Установите стоимость при использовании промокода (число):")
+        elif admin_promo_state == 'promo_price':
+            try:
+                price = float(text)
+                context.user_data['pending_promo_price'] = price
+                context.user_data['admin_promo_state'] = 'promo_start'
+                await update.message.reply_text("Введите начало действия промокода (YYYY-MM-DD HH:MM:SS):")
+            except ValueError:
+                await update.message.reply_text("Неверная цена. Введите число (например, 1500.00):")
+        elif admin_promo_state == 'promo_start':
+            context.user_data['pending_promo_start'] = text
+            context.user_data['admin_promo_state'] = 'promo_end'
+            await update.message.reply_text("Введите окончание действия промокода (YYYY-MM-DD HH:MM:SS):")
+        elif admin_promo_state == 'promo_end':
+            key = context.user_data['pending_promo_key']
+            price = context.user_data['pending_promo_price']
+            start = context.user_data['pending_promo_start']
+            end = text
+            cursor.execute("""
+                INSERT INTO promo (promo_key, promo_price, promo_start_period, promo_end_period)
+                VALUES (?, ?, ?, ?)
+            """, (key, price, start, end))
+            conn.commit()
+            del context.user_data['admin_promo_state']
+            del context.user_data['pending_promo_key']
+            del context.user_data['pending_promo_price']
+            del context.user_data['pending_promo_start']
+            keyboard = get_admin_keyboard()
+            await update.message.reply_text("✅ Промокод добавлен успешно!", reply_markup=keyboard)
+        return
+
     reg_state = context.user_data.get('reg_state')
     if not reg_state:
         return  # Ignore if not in reg state
-    text = (update.message.text or '').strip()
 
     if reg_state == 'name':
         if len(text) < 2:
