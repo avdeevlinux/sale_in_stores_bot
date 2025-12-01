@@ -150,7 +150,8 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Подготовить отчет", callback_data='prepare_report')],
         [InlineKeyboardButton("Список пользователей", callback_data='list_users')],
         [InlineKeyboardButton("Удалить пользователя", callback_data='delete_user')],
-        [InlineKeyboardButton("Добавить промокод", callback_data='add_promo')]
+        [InlineKeyboardButton("Добавить промокод", callback_data='add_promo')],
+        [InlineKeyboardButton("Действующие промокоды", callback_data='list_active_promos')]
     ])
 
 def is_consent_and_registered(chat_id: int) -> bool:
@@ -608,6 +609,28 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             context.user_data['admin_promo_state'] = 'promo_key'
             await query.edit_message_text("Введите название промокода:")
+            await query.answer()
+
+        elif query.data == 'list_active_promos':
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("""
+                SELECT promo_key, promo_price, promo_start_period, promo_end_period
+                FROM promo WHERE promo_start_period <= ? AND promo_end_period >= ?
+                ORDER BY promo_start_period
+            """, (now, now))
+            promos = cursor.fetchall()
+            if not promos:
+                text = "Нет действующих промокодов."
+            else:
+                text = "Действующие промокоды:\n\n"
+                for promo in promos:
+                    key, price, start, end = promo
+                    text += f"• {key}: {price:.2f} ₽\n  {start} — {end}\n\n"
+            keyboard = get_admin_keyboard()
+            await query.edit_message_text(text, reply_markup=keyboard)
             await query.answer()
 
         elif query.data.startswith('delete_confirm_'):
