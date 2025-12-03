@@ -145,13 +145,22 @@ def validate_promo(promo_key: str) -> Optional[float]:
     return row[0] if row else None
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Admin menu keyboard with promo button."""
+    """Admin menu keyboard."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Подготовить отчет", callback_data='prepare_report')],
         [InlineKeyboardButton("Список пользователей", callback_data='list_users')],
         [InlineKeyboardButton("Удалить пользователя", callback_data='delete_user')],
+        [InlineKeyboardButton("Промокод", callback_data='promo_menu')]
+    ])
+
+def get_promo_keyboard() -> InlineKeyboardMarkup:
+    """Promo submenu keyboard."""
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("Добавить промокод", callback_data='add_promo')],
-        [InlineKeyboardButton("Действующие промокоды", callback_data='list_active_promos')]
+        [InlineKeyboardButton("Действующие промокоды", callback_data='list_active_promos')],
+        [InlineKeyboardButton("Все промокоды", callback_data='list_all_promos')],
+        [InlineKeyboardButton("Удалить промокод", callback_data='delete_promo')],
+        [InlineKeyboardButton("← Назад", callback_data='admin_menu')]
     ])
 
 def is_consent_and_registered(chat_id: int) -> bool:
@@ -603,6 +612,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await query.answer()
             return
 
+        elif query.data == 'promo_menu':
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            keyboard = get_promo_keyboard()
+            await query.edit_message_text("Подменю: Промокоды", reply_markup=keyboard)
+            await query.answer()
+            return
+
         elif query.data == 'add_promo':
             if str(chat_id) != ADMIN_ID:
                 await query.answer("Только для администратора.")
@@ -629,9 +647,56 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 for promo in promos:
                     key, price, start, end = promo
                     text += f"• {key}: {price:.2f} ₽\n  {start} — {end}\n\n"
-            keyboard = get_admin_keyboard()
+            keyboard = get_promo_keyboard()
             await query.edit_message_text(text, reply_markup=keyboard)
             await query.answer()
+
+        elif query.data == 'list_all_promos':
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            cursor.execute("""
+                SELECT promo_key, promo_price, promo_start_period, promo_end_period
+                FROM promo 
+                ORDER BY promo_start_period DESC
+            """)
+            promos = cursor.fetchall()
+            if not promos:
+                text = "Нет промокодов."
+            else:
+                text = "Все промокоды:\n\n"
+                for promo in promos:
+                    key, price, start, end = promo
+                    text += f"• {key}: {price:.2f} ₽\n  {start} — {end}\n\n"
+            keyboard = get_promo_keyboard()
+            await query.edit_message_text(text, reply_markup=keyboard)
+            await query.answer()
+            return
+
+        elif query.data == 'delete_promo':
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            cursor.execute("SELECT promo_id, promo_key, promo_price FROM promo ORDER BY promo_id DESC LIMIT 20")
+            promos = cursor.fetchall()
+            if not promos:
+                text = "Нет промокодов для удаления."
+                keyboard = get_promo_keyboard()
+                await query.edit_message_text(text, reply_markup=keyboard)
+                await query.answer()
+                return
+            keyboard_rows = []
+            for promo in promos:
+                pid, key, price = promo
+                label = f"{key}: {price:.2f}₽"
+                if len(label) > 64:
+                    label = label[:61] + "..."
+                keyboard_rows.append([InlineKeyboardButton(label, callback_data=f'delete_promo_confirm_{pid}')])
+            keyboard_rows.append([InlineKeyboardButton("← Назад", callback_data='promo_menu')])
+            reply_markup = InlineKeyboardMarkup(keyboard_rows)
+            await query.edit_message_text("Выберите промокод для удаления:", reply_markup=reply_markup)
+            await query.answer()
+            return
 
         elif query.data.startswith('delete_confirm_'):
             try:
@@ -641,12 +706,35 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 cursor.execute("DELETE FROM users WHERE chat_id = ?", (del_id,))
                 cursor.execute("DELETE FROM payments WHERE chat_id = ?", (del_id,))
                 conn.commit()
-                await query.edit_message_text(f"Пользователь {name} ({del_id}) удалён из базы данных.")
+                await query.edit_message_text(f"Пользователь {name} ({del_id}) удалён из базы данных.", reply_markup=get_admin_keyboard())
             except (ValueError, IndexError):
-                await query.edit_message_text("Ошибка удаления.")
+                await query.edit_message_text("Ошибка удаления.", reply_markup=get_admin_keyboard())
             except Exception as e:
-                await query.edit_message_text(f"Ошибка: {str(e)}")
+                await query.edit_message_text(f"Ошибка: {str(e)}", reply_markup=get_admin_keyboard())
             await query.answer("Удалено")
+            return
+
+        elif query.data.startswith('delete_promo_confirm_'):
+            if str(chat_id) != ADMIN_ID:
+                await query.answer("Только для администратора.")
+                return
+            try:
+                parts = query.data.split('_')
+                promo_id = int(parts[-1])
+                cursor.execute("SELECT promo_key FROM promo WHERE promo_id = ?", (promo_id,))
+                row = cursor.fetchone()
+                if row:
+                    key = row[0]
+                    cursor.execute("DELETE FROM promo WHERE promo_id = ?", (promo_id,))
+                    conn.commit()
+                    await query.edit_message_text(f"✅ Промокод '{key}' (ID: {promo_id}) удалён.", reply_markup=get_promo_keyboard())
+                else:
+                    await query.edit_message_text("❌ Промокод не найден.", reply_markup=get_promo_keyboard())
+            except (ValueError, IndexError):
+                await query.edit_message_text("Ошибка удаления.", reply_markup=get_promo_keyboard())
+            except Exception as e:
+                await query.edit_message_text(f"Ошибка: {str(e)}", reply_markup=get_promo_keyboard())
+            await query.answer("Промокод удалён")
             return
 
         else:
@@ -771,7 +859,7 @@ async def register_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             del context.user_data['pending_promo_key']
             del context.user_data['pending_promo_price']
             del context.user_data['pending_promo_start']
-            keyboard = get_admin_keyboard()
+            keyboard = get_promo_keyboard()
             await update.message.reply_text("✅ Промокод добавлен успешно!", reply_markup=keyboard)
         return
 
